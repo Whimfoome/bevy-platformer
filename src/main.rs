@@ -33,6 +33,7 @@ fn create_window() -> WindowDescriptor {
 fn spawn(mut commands: Commands) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
+    // Spawn Floor
     let floor_size = Vec2::new(600.0, 30.0);
     commands
     .spawn_bundle(SpriteBundle {
