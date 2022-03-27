@@ -8,6 +8,7 @@ pub struct PlayerPlugin;
 pub struct PlayerMovement {
     on_wall: Option<Vec2>,
     on_floor: bool,
+    move_axis: Vec2,
     speed: f32,
     looking_right: bool,
     jump_height: f32,
@@ -28,6 +29,7 @@ impl Default for PlayerMovement {
         PlayerMovement {
             on_wall: None,
             on_floor: false,
+            move_axis: Vec2::new(0.0, 0.0),
             speed: 350.0,
             looking_right: true,
             jump_height: 120.0,
@@ -50,7 +52,10 @@ impl Plugin for PlayerPlugin {
         app
         .add_startup_system(setup)
         .add_system(controller_on_stuff)
-        .add_system(process);
+        .add_system(gravity)
+        .add_system(controller_input)
+        .add_system(accelerate)
+        .add_system(look_at);
     }
 }
 
@@ -82,108 +87,108 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 }
 
-fn process(
-    input: Res<Input<KeyCode>>, 
+fn gravity( 
     time: Res<Time>, 
-    mut query: Query<(&mut PlayerMovement, &mut Vel, &mut Sprite)>
+    mut query: Query<(&PlayerMovement, &mut Vel)>
 ) {
-    let mut move_axis = Vec2::new(0.0, 0.0);
     let delta = time.delta_seconds();
-
-    for (mut player, mut velocity, mut sprite) in query.iter_mut() {
-        velocity.0.y -= -get_gravity(velocity.as_ref(), player.as_ref()) * delta;
-
-        controller_input(input.as_ref(), &mut move_axis, velocity.as_mut(), player.as_ref());
-
-        accelerate(&move_axis, velocity.as_mut(), player.as_ref(), &delta);
-
-        look_at(&move_axis, player.as_mut(), sprite.as_mut());
-    }
-}
-
-fn get_gravity(velocity: &Vel, player: &PlayerMovement) -> f32 {
-    if velocity.0.y > 0.0 {
-        return player.jump_gravity;
-    }
-    else
-    {
-        return player.fall_gravity;
+    for (player, mut velocity) in query.iter_mut() {
+        if velocity.0.y > 0.0 {
+            velocity.0.y -= -player.jump_gravity * delta;
+        }
+        else
+        {
+            velocity.0.y -= -player.fall_gravity * delta;
+        }
     }
 }
 
 fn controller_input(
-    input: &Input<KeyCode>, 
-    move_axis: &mut Vec2, 
-    velocity: &mut Vel, 
-    player: &PlayerMovement
+    input: Res<Input<KeyCode>>, 
+    mut query: Query<(&mut PlayerMovement, &mut Vel)>
 ) {
-    if input.pressed(KeyCode::W) {
-        move_axis.y += 1.0;
-    }
-    if input.pressed(KeyCode::S) {
-        move_axis.y -= 1.0;
-    }
-    if input.pressed(KeyCode::D) {
-        move_axis.x += 1.0;
-    }
-    if input.pressed(KeyCode::A) {
-        move_axis.x -= 1.0;
-    }
+    for (mut player, mut velocity) in query.iter_mut() {
+        player.move_axis = Vec2::new(0.0, 0.0);
 
-    if input.just_pressed(KeyCode::Space) {
-        if player.on_floor {
-            velocity.0.y = player.jump_velocity;
+        if input.pressed(KeyCode::W) {
+            player.move_axis.y += 1.0;
         }
-    }
-
-    if input.just_released(KeyCode::Space) && velocity.0.y > player.min_jump_velocity {
-        velocity.0.y = player.min_jump_velocity;
-    }
-}
-
-fn accelerate(move_axis: &Vec2, velocity: &mut Vel, player: &PlayerMovement, delta: &f32) {
-    let mut temp_vel = velocity.0;
-    let mut temp_accel: f32;
-    let target = Vec2::new(move_axis.x * player.speed, 0.0);
-
-    temp_vel.y = 0.0;
-    if move_axis.x != 0.0 {
-        temp_accel = player.acceleration;
-    }
-    else {
-        temp_accel = player.deceleration;
-    }
-
-    if !player.on_floor {
-        temp_accel *= player.air_control;
-    }
-
-    temp_vel = temp_vel.lerp(target, temp_accel * delta);
-
-    velocity.0.x = temp_vel.x;
-
-    if move_axis.x == 0.0 {
-        let vel_clamp = 0.01;
-
-        if velocity.0.x.abs() < vel_clamp {
-            velocity.0.x = 0.0;
+        if input.pressed(KeyCode::S) {
+            player.move_axis.y -= 1.0;
+        }
+        if input.pressed(KeyCode::D) {
+            player.move_axis.x += 1.0;
+        }
+        if input.pressed(KeyCode::A) {
+            player.move_axis.x -= 1.0;
+        }
+    
+        if input.just_pressed(KeyCode::Space) {
+            if player.on_floor {
+                velocity.0.y = player.jump_velocity;
+            }
+        }
+    
+        if input.just_released(KeyCode::Space) && velocity.0.y > player.min_jump_velocity {
+            velocity.0.y = player.min_jump_velocity;
         }
     }
 }
 
-fn look_at(move_axis: &Vec2, player: &mut PlayerMovement, sprite: &mut Sprite) {
-    if move_axis.x >= 0.5 {
-        player.looking_right = true;
-    }
-    if move_axis.x <= -0.5 {
-        player.looking_right = false;
-    }
+fn accelerate(
+    time: Res<Time>, 
+    mut query: Query<(&PlayerMovement, &mut Vel)>
+) {
+    let delta = time.delta_seconds();
 
-    if player.looking_right {
-        sprite.flip_x = false;
+    for (player, mut velocity) in query.iter_mut() {
+        let mut temp_vel = velocity.0;
+        let mut temp_accel: f32;
+        let target = Vec2::new(player.move_axis.x * player.speed, 0.0);
+    
+        temp_vel.y = 0.0;
+        if player.move_axis.x != 0.0 {
+            temp_accel = player.acceleration;
+        }
+        else {
+            temp_accel = player.deceleration;
+        }
+    
+        if !player.on_floor {
+            temp_accel *= player.air_control;
+        }
+    
+        temp_vel = temp_vel.lerp(target, temp_accel * delta);
+    
+        velocity.0.x = temp_vel.x;
+    
+        if player.move_axis.x == 0.0 {
+            let vel_clamp = 0.01;
+    
+            if velocity.0.x.abs() < vel_clamp {
+                velocity.0.x = 0.0;
+            }
+        }
     }
-    else {
-        sprite.flip_x = true;
+}
+
+fn look_at(
+    mut query: Query<(&mut PlayerMovement, &mut Sprite)>
+) {
+    for (mut player, mut sprite) in query.iter_mut() {
+        if player.move_axis.x >= 0.5 {
+            player.looking_right = true;
+        }
+        if player.move_axis.x <= -0.5 {
+            player.looking_right = false;
+        }
+    
+        if player.looking_right {
+            sprite.flip_x = false;
+        }
+        else {
+            sprite.flip_x = true;
+        }
     }
 }
 
