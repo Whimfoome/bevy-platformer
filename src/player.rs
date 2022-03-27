@@ -102,7 +102,7 @@ fn process(
 }
 
 fn get_gravity(velocity: &Vel, player: &PlayerMovement) -> f32 {
-    if velocity.0.x > 0.0 {
+    if velocity.0.y > 0.0 {
         return player.jump_gravity;
     }
     else
