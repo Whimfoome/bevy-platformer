@@ -1,8 +1,22 @@
 use bevy::prelude::*;
 use bevy_physimple::prelude::*;
 use bevy_inspector_egui::Inspectable;
+use crate::helpers::TimerHelper;
 
 pub struct PlayerPlugin;
+
+impl Plugin for PlayerPlugin {
+    fn build(&self, app: &mut App) {
+        app
+        .add_startup_system(setup)
+        .add_system(controller_on_stuff.label("stuff"))
+        .add_system(was_on_floor.before("stuff"))
+        .add_system(controller_input.after("stuff"))
+        .add_system(gravity)
+        .add_system(accelerate)
+        .add_system(look_at);
+    }
+}
 
 #[derive(Component, Inspectable)]
 pub struct PlayerMovement {
@@ -11,6 +25,8 @@ pub struct PlayerMovement {
     on_wall: Option<Vec2>,
     #[inspectable(read_only)]
     on_floor: bool,
+    #[inspectable(ignore)]
+    was_on_floor: bool,
     #[inspectable(read_only)]
     move_axis: Vec2,
     #[inspectable(read_only)]
@@ -19,6 +35,8 @@ pub struct PlayerMovement {
     deceleration: f32,
     #[inspectable(min = 0.0, max = 1.0)]
     air_control: f32,
+    #[inspectable(read_only)]
+    is_jumping: bool,
     #[inspectable(read_only)]
     jump_height: f32,
     #[inspectable(read_only)]
@@ -42,6 +60,7 @@ impl Default for PlayerMovement {
         PlayerMovement {
             on_wall: None,
             on_floor: false,
+            was_on_floor: false,
             move_axis: Vec2::new(0.0, 0.0),
             speed: 350.0,
             looking_right: true,
@@ -49,6 +68,7 @@ impl Default for PlayerMovement {
             acceleration: 10.0,
             deceleration: 12.0,
             air_control: 0.9,
+            is_jumping: false,
             min_jump_height: 60.0,
             jump_time_to_peak: 0.4,
             jump_time_to_descent: 0.4,
@@ -60,48 +80,68 @@ impl Default for PlayerMovement {
     }
 }
 
-#[derive(Component)]
-pub struct CoyoteTimer(Timer);
+#[derive(Bundle)]
+struct PlayerBundle {
+    name: Name,
+    #[bundle]
+    sprite_bundle: SpriteBundle,
+    player_movement: PlayerMovement,
+    #[bundle]
+    physics: KinematicBundle,
+    coyote_timer: CoyoteTimer,
+    jump_buffer: JumpBuffer,
+}
 
-impl Plugin for PlayerPlugin {
-    fn build(&self, app: &mut App) {
-        app
-        .add_startup_system(setup)
-        .add_system(controller_on_stuff)
-        .add_system(gravity)
-        .add_system(controller_input)
-        .add_system(accelerate)
-        .add_system(look_at);
+impl Default for PlayerBundle {
+    fn default() -> Self {
+        let player_size = Vec2::new(54.0, 54.0);
+
+        // Math explained in https://www.youtube.com/watch?v=IOe1aGY6hXA
+        let mut pm = PlayerMovement::default();
+        pm.jump_velocity = (2.0 * pm.jump_height) / pm.jump_time_to_peak;
+        pm.min_jump_velocity = (2.0 * pm.min_jump_height) / pm.jump_time_to_peak;
+        pm.jump_gravity = (-2.0 * pm.jump_height) / pm.jump_time_to_peak.powi(2);
+        pm.fall_gravity = (-2.0 * pm.jump_height) / pm.jump_time_to_descent.powi(2);
+
+        let mut coyote_timer = Timer::from_seconds(0.1, false);
+        coyote_timer.pause();
+
+        let mut jump_buffer = Timer::from_seconds(0.1, false);
+        jump_buffer.pause();
+
+        PlayerBundle {
+            name: Name::new("Player"),
+            sprite_bundle: SpriteBundle {
+                sprite: Sprite {
+                    custom_size: Some(player_size),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            player_movement: pm,
+            physics: KinematicBundle {
+                shape: CollisionShape::Square(Square::size(player_size)),
+                ..Default::default()
+            },
+            coyote_timer: CoyoteTimer(coyote_timer),
+            jump_buffer: JumpBuffer(jump_buffer),
+        }
     }
 }
 
-// TODO: coyote time, jump buffer, player with animations, organize the code a bit better
+#[derive(Component)]
+pub struct CoyoteTimer(pub Timer);
+
+#[derive(Component)]
+pub struct JumpBuffer(pub Timer);
+
+// TODO: player with animations, organize the code a bit better
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let player_size = Vec2::new(54.0, 54.0);
+    let mut player_bundle = PlayerBundle::default();
+    player_bundle.sprite_bundle.texture = asset_server.load("bevy.png");
 
-    // Math explained in https://www.youtube.com/watch?v=IOe1aGY6hXA
-    let mut pm = PlayerMovement::default();
-    pm.jump_velocity = (2.0 * pm.jump_height) / pm.jump_time_to_peak;
-    pm.min_jump_velocity = (2.0 * pm.min_jump_height) / pm.jump_time_to_peak;
-    pm.jump_gravity = (-2.0 * pm.jump_height) / pm.jump_time_to_peak.powi(2);
-    pm.fall_gravity = (-2.0 * pm.jump_height) / pm.jump_time_to_descent.powi(2);
-
-    commands.spawn_bundle(SpriteBundle {
-        texture: asset_server.load("bevy.png"),
-        sprite: Sprite {
-            custom_size: Some(player_size),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-    .insert(pm)
-    .insert(Name::new("Player"))
-    .insert_bundle(KinematicBundle {
-        shape: CollisionShape::Square(Square::size(player_size)),
-        ..Default::default()
-    })
-    .insert(CoyoteTimer(Timer::from_seconds(1.0, false)));
+    commands.spawn_bundle(player_bundle);
 }
 
 fn gravity( 
@@ -120,14 +160,19 @@ fn gravity(
     }
 }
 
-fn controller_input(
-    time: Res<Time>,
-    input: Res<Input<KeyCode>>, 
-    mut query: Query<(&mut PlayerMovement, &mut Vel, &mut CoyoteTimer)>
+fn was_on_floor(
+    mut query: Query<&mut PlayerMovement>
 ) {
-    for (mut player, mut velocity, mut coyote) in query.iter_mut() {
-        coyote.0.tick(time.delta());
+    for mut player in query.iter_mut() {
+        player.was_on_floor = player.on_floor;
+    }
+}
 
+fn controller_input(
+    input: Res<Input<KeyCode>>, 
+    mut query: Query<(&mut PlayerMovement, &mut Vel, &mut CoyoteTimer, &mut JumpBuffer)>
+) {
+    for (mut player, mut velocity, mut coyote, mut jump_buffer) in query.iter_mut() {
         player.move_axis = Vec2::new(0.0, 0.0);
 
         if input.pressed(KeyCode::W) {
@@ -142,24 +187,37 @@ fn controller_input(
         if input.pressed(KeyCode::A) {
             player.move_axis.x -= 1.0;
         }
+
+        if player.on_floor && !jump_buffer.0.is_stopped() {
+            jump_buffer.0.pause();
+
+            velocity.0.y = player.jump_velocity;
+            player.is_jumping = true;
+        }
     
         if input.just_pressed(KeyCode::Space) {
-            if player.on_floor || !coyote.0.paused() {
+            if player.on_floor || !coyote.0.is_stopped() {
                 coyote.0.pause();
+
                 velocity.0.y = player.jump_velocity;
+                player.is_jumping = true;
             }
+            else {
+                jump_buffer.0.start();
+            }
+        }
+
+        if player.is_jumping && velocity.0.y <= 0.0 {
+            player.is_jumping = false;
         }
     
         if input.just_released(KeyCode::Space) && velocity.0.y > player.min_jump_velocity {
             velocity.0.y = player.min_jump_velocity;
         }
 
-        if !player.on_floor {
-            coyote.0.unpause();
-            coyote.0.reset();
+        if !player.on_floor && player.was_on_floor && !player.is_jumping {
+            coyote.0.start();
         }
-
-        println!("{0}", coyote.0.elapsed_secs());
     }
 }
 
