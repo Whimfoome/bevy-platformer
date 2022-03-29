@@ -6,21 +6,34 @@ pub struct PlayerPlugin;
 
 #[derive(Component, Inspectable)]
 pub struct PlayerMovement {
-    on_wall: Option<Vec2>,
-    on_floor: bool,
-    move_axis: Vec2,
     speed: f32,
+    #[inspectable(read_only)]
+    on_wall: Option<Vec2>,
+    #[inspectable(read_only)]
+    on_floor: bool,
+    #[inspectable(read_only)]
+    move_axis: Vec2,
+    #[inspectable(read_only)]
     looking_right: bool,
-    jump_height: f32,
     acceleration: f32,
     deceleration: f32,
+    #[inspectable(min = 0.0, max = 1.0)]
     air_control: f32,
+    #[inspectable(read_only)]
+    jump_height: f32,
+    #[inspectable(read_only)]
     min_jump_height: f32,
+    #[inspectable(read_only)]
     jump_time_to_peak: f32,
+    #[inspectable(read_only)]
     jump_time_to_descent: f32,
+    #[inspectable(ignore)]
     jump_velocity: f32,
+    #[inspectable(ignore)]
     min_jump_velocity: f32,
+    #[inspectable(ignore)]
     jump_gravity: f32,
+    #[inspectable(ignore)]
     fall_gravity: f32,
 }
 
@@ -46,6 +59,9 @@ impl Default for PlayerMovement {
         }
     }
 }
+
+#[derive(Component)]
+pub struct CoyoteTimer(Timer);
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
@@ -84,7 +100,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     .insert_bundle(KinematicBundle {
         shape: CollisionShape::Square(Square::size(player_size)),
         ..Default::default()
-    });
+    })
+    .insert(CoyoteTimer(Timer::from_seconds(1.0, false)));
 }
 
 fn gravity( 
@@ -104,10 +121,13 @@ fn gravity(
 }
 
 fn controller_input(
+    time: Res<Time>,
     input: Res<Input<KeyCode>>, 
-    mut query: Query<(&mut PlayerMovement, &mut Vel)>
+    mut query: Query<(&mut PlayerMovement, &mut Vel, &mut CoyoteTimer)>
 ) {
-    for (mut player, mut velocity) in query.iter_mut() {
+    for (mut player, mut velocity, mut coyote) in query.iter_mut() {
+        coyote.0.tick(time.delta());
+
         player.move_axis = Vec2::new(0.0, 0.0);
 
         if input.pressed(KeyCode::W) {
@@ -124,7 +144,8 @@ fn controller_input(
         }
     
         if input.just_pressed(KeyCode::Space) {
-            if player.on_floor {
+            if player.on_floor || !coyote.0.paused() {
+                coyote.0.pause();
                 velocity.0.y = player.jump_velocity;
             }
         }
@@ -132,6 +153,13 @@ fn controller_input(
         if input.just_released(KeyCode::Space) && velocity.0.y > player.min_jump_velocity {
             velocity.0.y = player.min_jump_velocity;
         }
+
+        if !player.on_floor {
+            coyote.0.unpause();
+            coyote.0.reset();
+        }
+
+        println!("{0}", coyote.0.elapsed_secs());
     }
 }
 
@@ -179,7 +207,7 @@ fn look_at(
         if player.move_axis.x >= 0.5 {
             player.looking_right = true;
         }
-        if player.move_axis.x <= -0.5 {
+        else if player.move_axis.x <= -0.5 {
             player.looking_right = false;
         }
     
