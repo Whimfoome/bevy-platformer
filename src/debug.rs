@@ -1,4 +1,4 @@
-use crate::player::PlayerMovement;
+use crate::player::{PlayerMovement};
 use bevy::prelude::*;
 use bevy_inspector_egui::{WorldInspectorPlugin, RegisterInspectable};
 
